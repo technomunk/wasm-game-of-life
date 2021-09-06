@@ -1,17 +1,15 @@
 mod utils;
+mod bitstore;
+mod shape;
 
+use bitstore::BitStore;
 use wasm_bindgen::prelude::*;
-use js_sys::Math;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-/// Bit-dense storage for cells.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BitStore(Vec<u8>);
 
 #[wasm_bindgen]
 #[derive(Debug, PartialEq, Eq)]
@@ -52,10 +50,10 @@ impl Universe {
 		&self.cells
 	}
 
-	/// Set cells at provided coordinates to alive state.
-	pub fn set_cells<'a, T: IntoIterator<Item = &'a (u32, u32)>>(&mut self, cells: T) {
-		for &(x, y) in cells {
-			self.cells.set(self.idx(x, y), true)
+	pub fn place<T>(&mut self, cells: T, xo: u32, yo: u32)
+	where T: IntoIterator<Item = (u32, u32)> {
+		for (x, y) in cells {
+			self.cells.set(self.idx(x.wrapping_add(xo), y.wrapping_add(yo)), true)
 		}
 	}
 }
@@ -122,53 +120,22 @@ impl Universe {
 	pub fn cells_size(&self) -> usize {
 		self.cells.size()
 	}
-}
 
-impl BitStore {
-	/// Test whether the provided bit is set.
-	pub fn get(&self, idx: usize) -> bool {
-		let mask = 1 << (idx % 8);
-		self.0[idx/8] & mask == mask 
+	/// Toggle provided cell.
+	pub fn toggle(&mut self, x: u32, y: u32) {
+		let idx = self.idx(x, y);
+		self.cells.set(idx, !self.cells.get(idx));
 	}
 
-	/// Set the provided bit to given state.
-	pub fn set(&mut self, idx: usize, val: bool) {
-		let mask = 1 << (idx % 8);
-		if val {
-			self.0[idx/8] |= mask
-		} else {
-			self.0[idx/8] &= !mask
-		}
-	}
-
-	/// Get the number of bytes the data occupies.
-	pub fn size(&self) -> usize {
-		self.0.len()
-	}
-
-	pub fn as_ptr(&self) -> *const u8 {
-		self.0.as_ptr()
-	}
-
-	/// Generate a randomly filled BitStore with at least the provided bit count.
-	pub fn random(length: usize) -> Self {
-		let rounding = (length % 8 != 0) as usize;
-		let max = length / 8 + rounding;
-		// NOTE: a more efficient variant would be to invoke Math::random() for every 50ish bits
-		// as it's the most computationally expensive operation during initialization.
-		Self((0..max)
-			.map(|_| (Math::random() * 256.0) as u8)
-			.collect()
-		)
-	}
-
-	/// Create an empty bitstore with at least provided bit count.
-	pub fn empty(length: usize) -> Self {
-		let rounding = (length % 8 != 0) as usize;
-		let max = length / 8 + rounding;
-		Self((0..max).map(|_| 0).collect())
+	/// Spawn a randomly transformed glider at provided coordinates.
+	pub fn spawn_glider(&mut self, x: u32, y: u32) {
+		let tr = shape::Transformation::random();
+		let cells = shape::GLIDER.iter()
+			.map(|cell| shape::transform(*cell, 3, 3, tr));
+		self.place(cells, x - 1, y - 1);
 	}
 }
+
 
 impl std::fmt::Display for Universe {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -190,28 +157,12 @@ impl std::fmt::Display for Universe {
 #[cfg(test)]
 mod test {
 	use super::*;
-
-	#[test]
-	fn test_bitstore() {
-		let mut store = BitStore::empty(2);
-	
-		assert_eq!(&store.0, &[0]);
-	
-		store.set(0, true);
-		assert_eq!(&store.0, &[1]);
-	
-		store.set(1, true);
-		assert_eq!(&store.0, &[3]);
-	
-		store.set(0, false);
-		assert_eq!(&store.0, &[2]);
-	}
 	
 	#[test]
 	fn test_neighbor_count() {
 		// leave an empty row and column to avoid wrapping artifacts
 		let mut universe = Universe::empty(4, 4);
-		universe.set_cells(&[(1, 0), (1, 1), (1, 2)]);
+		universe.place([(1, 0), (1, 1), (1, 2)], 0, 0);
 
 		assert_eq!(universe.live_neighbor_count(0, 0), 2);
 		assert_eq!(universe.live_neighbor_count(1, 0), 1);
@@ -233,7 +184,7 @@ mod test {
 	fn test_get_cell() {
 		const CELLS: &[(u32, u32)] = &[(1,2), (2,3), (3,1), (3,2), (3,3)];
 		let mut universe = Universe::empty(6, 6);
-		universe.set_cells(CELLS);
+		universe.place(CELLS.iter().copied(), 0, 0);
 
 		for &(x, y) in CELLS {
 			assert!(universe.cells.get(universe.idx(x, y)));
